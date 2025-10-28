@@ -1,3 +1,4 @@
 fastmcp 
 simple-salesforce 
 python-dotenv
+pandas
