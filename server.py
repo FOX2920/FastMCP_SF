@@ -18,11 +18,11 @@ def get_salesforce_client() -> Salesforce:
     Tạo và trả về một instance Salesforce client đã được xác thực.
     Đọc credentials an toàn từ biến môi trường (SALESFORCE_USERNAME, v.v.)
     """
-    SF_USERNAME = os.getenv("SALESFORCE_USERNAME")
-    SF_PASSWORD = os.getenv("SALESFORCE_PASSWORD")
-    SF_SECURITY_TOKEN = os.getenv("SALESFORCE_SECURITY_TOKEN")
+    SALESFORCE_USERNAME = os.getenv("SALESFORCE_USERNAME")
+    SALESFORCE_PASSWORD = os.getenv("SALESFORCE_PASSWORD")
+    SALESFORCE_SECURITY_TOKEN = os.getenv("SALESFORCE_SECURITY_TOKEN")
 
-    if not all([SF_USERNAME, SF_PASSWORD, SF_SECURITY_TOKEN]):
+    if not all([SALESFORCE_USERNAME, SALESFORCE_PASSWORD, SALESFORCE_SECURITY_TOKEN]):
         raise ValueError(
             "Thiếu biến môi trường Salesforce: SALESFORCE_USERNAME, "
             "SALESFORCE_PASSWORD, hoặc SALESFORCE_SECURITY_TOKEN. "
@@ -31,9 +31,9 @@ def get_salesforce_client() -> Salesforce:
     
     try:
         sf = Salesforce(
-            username=SF_USERNAME,
-            password=SF_PASSWORD,
-            security_token=SF_SECURITY_TOKEN
+            username=SALESFORCE_USERNAME,
+            password=SALESFORCE_PASSWORD,
+            security_token=SALESFORCE_SECURITY_TOKEN
         )
         return sf
     except Exception as e:
