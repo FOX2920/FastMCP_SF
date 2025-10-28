@@ -267,15 +267,6 @@ def get_contract_details_by_account(account_code: str) -> Dict[str, Any]:
             "error": f"Error processing data for account {account_code}: {str(e)}"
         }
 
-@mcp.tool()
-def get_server_status() -> Dict[str, str]:
-    """Check Salesforce Contract MCP server status."""
-    return {
-        "status": "running",
-        "server": "Salesforce Contract Assistant MCP Server",
-        "version": "1.0.0"
-    }
-
 # --- CÁC TOOL MỚI CHO VISUALIZATION & INSIGHT ---
 
 @mcp.tool()
