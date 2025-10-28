@@ -1,92 +1,33 @@
 from fastmcp import FastMCP
-import json
 import os
-from typing import Dict, Any, List, Optional
-from simple_salesforce import Salesforce, SalesforceError
+from typing import Dict, Any, List
+from simple_salesforce import Salesforce
 from dotenv import load_dotenv
+import pandas as pd
+from datetime import datetime
+import warnings
+import numpy as np
 
-# Tải các biến môi trường từ file .env (nếu có)
+# Tải các biến môi trường từ file .env
 load_dotenv()
+warnings.filterwarnings('ignore')
 
 # Khởi tạo server FastMCP
-mcp = FastMCP(name="SalesforceMCP")
-
-# Cơ sở dữ liệu demo trong bộ nhớ
-_DB = {
-    "1": {
-        "id": "1", 
-        "title": "Salesforce MCP Overview", 
-        "body": "What Salesforce MCP is and why it matters for CRM automation.",
-        "type": "documentation"
-    },
-    "2": {
-        "id": "2", 
-        "title": "SOQL Query Examples", 
-        "body": "Common SOQL queries for Account, Contact, and Opportunity objects.",
-        "type": "examples"
-    },
-    "3": {
-        "id": "3", 
-        "title": "Custom Object Creation", 
-        "body": "How to create custom objects with fields using the Metadata API.",
-        "type": "tutorial"
-    },
-    "4": {
-        "id": "4", 
-        "title": "Einstein Studio Models", 
-        "body": "Creating predictive models using Einstein Studio and AppFrameworkTemplateBundle.",
-        "type": "advanced"
-    },
-    "5": {
-        "id": "5", 
-        "title": "Lightning App Builder", 
-        "body": "Building custom Lightning applications and pages for Salesforce.",
-        "type": "tutorial"
-    }
-}
-
-# --- Các hàm Tool cho MCP ---
-
-@mcp.tool
-def greet(name: str) -> str:
-    """Return a friendly greeting for Salesforce MCP users."""
-    return f"Hello {name}! Welcome to the Salesforce MCP server. I can help you with Salesforce operations, queries, and metadata management."
-
-@mcp.tool
-def search(query: str) -> List[Dict[str, Any]]:
-    """Search Salesforce MCP documentation and examples by substring in title/body."""
-    q = query.lower().strip()
-    results = []
-    for item in _DB.values():
-        if q in item["title"].lower() or q in item["body"].lower():
-            results.append({
-                "id": item["id"],
-                "title": item["title"],
-                "type": item["type"],
-                "snippet": item["body"][:200] + "..." if len(item["body"]) > 200 else item["body"]
-            })
-    return results
-
-@mcp.tool
-def fetch(id: str) -> Dict[str, Any]:
-    """Fetch a specific Salesforce MCP documentation item by ID."""
-    if id not in _DB:
-        return {"error": f"Document with id {id} not found"}
-    return _DB[id]
+mcp = FastMCP(name="SalesforceContractMCP")
 
 # --- Hàm Helper cho Kết nối Salesforce ---
 
 def get_salesforce_client() -> Salesforce:
     """
     Tạo và trả về một instance Salesforce client đã được xác thực.
-    Đọc credentials an toàn từ biến môi trường.
+    Đọc credentials an toàn từ biến môi trường (SALESFORCE_USERNAME, v.v.)
     """
-    SF_USERNAME = os.getenv("SF_USERNAME")
-    SF_PASSWORD = os.getenv("SF_PASSWORD")
-    SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN")
-    
+    SF_USERNAME = os.getenv("SALESFORCE_USERNAME")
+    SF_PASSWORD = os.getenv("SALESFORCE_PASSWORD")
+    SF_SECURITY_TOKEN = os.getenv("SALESFORCE_SECURITY_TOKEN")
+
     if not all([SF_USERNAME, SF_PASSWORD, SF_SECURITY_TOKEN]):
-        raise ValueError("Thiếu biến môi trường Salesforce: SF_USERNAME, SF_PASSWORD, hoặc SF_SECURITY_TOKEN. Vui lòng kiểm tra file .env")
+        raise ValueError("Thiếu biến môi trường Salesforce: SALESFORCE_USERNAME, SALESFORCE_PASSWORD, hoặc SALESFORCE_SECURITY_TOKEN. Vui lòng kiểm tra file .env")
         
     sf = Salesforce(
         username=SF_USERNAME,
@@ -95,149 +36,155 @@ def get_salesforce_client() -> Salesforce:
     )
     return sf
 
-# --- Các hàm Tool tương tác với Salesforce ---
+# --- Hàm Helper: Logic xử lý dữ liệu (từ code FastAPI của bạn) ---
+
+def _get_processed_data() -> pd.DataFrame:
+    """
+    Hàm helper nội bộ để lấy và xử lý dữ liệu từ Salesforce.
+    Kết hợp logic từ fetch_data() và transform_data() từ code FastAPI.
+    """
+    
+    # 1. Kết nối và Lấy dữ liệu (từ fetch_data)
+    sf = get_salesforce_client()
+    soql = """
+        SELECT Name, 
+            Contract__r.Account__r.Account_Code__c, 
+            Product__r.STONE_Color_Type__c,
+            Product__r.StockKeepingUnit,
+            Product__r.Family,
+            Segment__c,
+            Contract__r.Created_Date__c,
+            Contract__r.Name,
+            Product_Discription__c,
+            Length__c,
+            Width__c,
+            Height__c,
+            Quantity__c,
+            Crates__c,
+            m2__c,
+            m3__c,
+            Tons__c, 
+            Cont__c,
+            Sales_Price__c,
+            Charge_Unit_PI__c,
+            Total_Price_USD__c
+        FROM Contract_Product__c 
+        ORDER BY Contract__r.Created_Date__c DESC
+        """
+    
+    query_result = sf.query_all(soql)
+    records = query_result['records']
+    
+    if not records:
+        return pd.DataFrame() # Trả về DataFrame rỗng nếu không có dữ liệu
+    
+    df = pd.json_normalize(records, sep='.')
+    df = df.drop([col for col in df.columns if 'attributes' in col], axis=1)
+    
+    df.columns = df.columns.str.replace('Contract__r.', 'Contract_', regex=False)
+    df.columns = df.columns.str.replace('Product__r.', 'Product_', regex=False)
+    df.columns = df.columns.str.replace('Account__r.', 'Account_', regex=False)
+
+    # 2. Chuyển đổi dữ liệu (từ transform_data)
+    df_export = pd.DataFrame()
+    
+    df_export['Account Name: Account Code'] = df.get('Contract_Account_Account_Code__c')
+    df_export['Product: STONE Color Type'] = df.get('Product_STONE_Color_Type__c')
+    df_export['Product: Product SKU'] = df.get('Product_StockKeepingUnit')
+    df_export['Contract Product Name'] = df.get('Name')
+    
+    df['Created_Date'] = pd.to_datetime(df.get('Contract_Created_Date__c'), errors='coerce')
+    df_export['YEAR'] = df['Created_Date'].dt.year
+    
+    df_export['Product Discription'] = df.get('Product_Discription__c')
+    df_export['Product: Mô tả sản phẩm'] = df.get('Product_Discription__c')
+    
+    df_export['Length'] = pd.to_numeric(df.get('Length__c'), errors='coerce')
+    df_export['Width'] = pd.to_numeric(df.get('Width__c'), errors='coerce')
+    df_export['Height'] = pd.to_numeric(df.get('Height__c'), errors='coerce')
+    df_export['Quantity'] = pd.to_numeric(df.get('Quantity__c'), errors='coerce').fillna(0).astype(int)
+    df_export['Crates'] = pd.to_numeric(df.get('Crates__c'), errors='coerce')
+    df_export['m2'] = pd.to_numeric(df.get('m2__c'), errors='coerce')
+    df_export['m3'] = pd.to_numeric(df.get('m3__c'), errors='coerce')
+    df_export['Tons'] = pd.to_numeric(df.get('Tons__c'), errors='coerce')
+    df_export['Cont'] = pd.to_numeric(df.get('Cont__c'), errors='coerce')
+    df_export['Sales Price'] = pd.to_numeric(df.get('Sales_Price__c'), errors='coerce')
+    
+    df_export['Charge Unit (PI)'] = df.get('Charge_Unit_PI__c')
+    df_export['Total Price (USD)'] = pd.to_numeric(df.get('Total_Price_USD__c'), errors='coerce')
+    
+    df_export['Product: Product Family'] = df.get('Product_Family')
+    df_export['Segment'] = df.get('Segment__c')
+    df_export['Contract Name'] = df.get('Contract_Name')
+    df_export['Created Date (C)'] = df['Created_Date'].dt.strftime('%d/%m/%Y')
+    
+    # 3. Lọc và Sắp xếp
+    df_export = df_export[
+        (df_export['YEAR'] >= 2015) & 
+        (df_export['YEAR'] <= datetime.now().year)
+    ]
+    df_export = df_export.dropna(subset=['Account Name: Account Code'])
+    
+    df_export = df_export.sort_values(
+        by=['Account Name: Account Code', 'YEAR'],
+        ascending=[True, False]
+    )
+    
+    return df_export
+
+# --- CÁC TOOL MCP DUY NHẤT THEO YÊU CẦU ---
 
 @mcp.tool
-def run_soql_query(query: str) -> Dict[str, Any]:
-    """Execute a SOQL query against Salesforce and return results."""
+def get_all_contract_product_details() -> Dict[str, Any]:
+    """
+    Tool 1: Lấy toàn bộ dữ liệu chi tiết sản phẩm hợp đồng đã được xử lý.
+    Fetch, transform, and return all contract product details as JSON.
+    """
     try:
-        sf = get_salesforce_client()
-        results = sf.query_all(query)
-        return {
-            "success": True,
-            "total_size": results.get("totalSize", 0),
-            "done": results.get("done", True),
-            "records": results.get("records", [])
-        }
-    except SalesforceError as e:
-        return {"success": False, "error": f"SOQL Error: {e.status} {e.resource_name} {e.content}"}
+        df = _get_processed_data()
+        
+        if df.empty:
+            return {"success": True, "count": 0, "data": []}
+        
+        # Thay thế NaN bằng None để tương thích JSON
+        df_json = df.replace({np.nan: None})
+        records = df_json.to_dict(orient='records')
+        
+        return {"success": True, "count": len(records), "data": records}
+        
     except Exception as e:
-        return {"success": False, "error": f"Error executing SOQL: {str(e)}"}
+        return {"success": False, "error": f"Error processing data: {str(e)}"}
 
 @mcp.tool
-def run_sosl_search(search_string: str) -> Dict[str, Any]:
-    """Execute a SOSL search against Salesforce and return results."""
+def get_contract_details_by_account(account_code: str) -> Dict[str, Any]:
+    """
+    Tool 2: Lấy dữ liệu chi tiết sản phẩm hợp đồng đã xử lý, lọc theo Account Code.
+    Fetch processed contract product details, filtered by a specific Account Code.
+    """
     try:
-        sf = get_salesforce_client()
-        results = sf.search(search_string)
-        return {
-            "success": True,
-            "search_records": results.get("searchRecords", [])
-        }
-    except SalesforceError as e:
-        return {"success": False, "error": f"SOSL Error: {e.status} {e.resource_name} {e.content}"}
+        df = _get_processed_data()
+        
+        if df.empty:
+            return {"success": True, "count": 0, "data": [], "message": f"No data found (empty source) for account code {account_code}"}
+        
+        # Lọc DataFrame (so sánh không phân biệt chữ hoa/thường và khoảng trắng)
+        filtered_df = df[df['Account Name: Account Code'].str.strip().lower() == account_code.strip().lower()]
+        
+        if filtered_df.empty:
+            return {"success": True, "count": 0, "data": [], "message": f"No data found for account code {account_code}"}
+            
+        # Thay thế NaN bằng None để tương thích JSON
+        df_json = filtered_df.replace({np.nan: None})
+        records = df_json.to_dict(orient='records')
+        
+        return {"success": True, "count": len(records), "data": records}
+        
     except Exception as e:
-        return {"success": False, "error": f"Error executing SOSL: {str(e)}"}
+        return {"success": False, "error": f"Error processing data for account {account_code}: {str(e)}"}
 
-@mcp.tool
-def describe_object(object_name: str) -> Dict[str, Any]:
-    """Get detailed schema information for a Salesforce object."""
-    try:
-        sf = get_salesforce_client()
-        sf_object = getattr(sf, object_name)
-        describe = sf_object.describe()
-        
-        # Trích xuất thông tin chính
-        result = {
-            "success": True,
-            "object_info": {
-                "name": describe["name"],
-                "label": describe["label"],
-                "label_plural": describe.get("labelPlural", ""),
-                "key_prefix": describe.get("keyPrefix", ""),
-                "custom": describe.get("custom", False),
-                "createable": describe.get("createable", False),
-                "updateable": describe.get("updateable", False),
-                "deletable": describe.get("deletable", False)
-            },
-            "fields": []
-        }
-        
-        # Thêm thông tin trường
-        for field in describe.get("fields", []):
-            field_info = {
-                "name": field["name"],
-                "label": field["label"],
-                "type": field["type"],
-                "required": not field.get("nillable", True),
-                "unique": field.get("unique", False),
-                "external_id": field.get("externalId", False),
-                "updateable": field.get("updateable", False),
-                "createable": field.get("createable", False)
-            }
-            result["fields"].append(field_info)
-        
-        return result
-        
-    except AttributeError:
-        return {"success": False, "error": f"Object '{object_name}' not found or not accessible"}
-    except Exception as e:
-        return {"success": False, "error": f"Error describing object {object_name}: {str(e)}"}
-
-@mcp.tool
-def create_record(object_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a new record in Salesforce."""
-    try:
-        sf = get_salesforce_client()
-        sf_object = getattr(sf, object_name)
-        result = sf_object.create(data)
-        
-        return {
-            "success": result.get("success", False),
-            "id": result.get("id"),
-            "errors": result.get("errors", [])
-        }
-    except AttributeError:
-        return {"success": False, "error": f"Object type '{object_name}' not found or accessible via API"}
-    except SalesforceError as e:
-        return {"success": False, "error": f"Create Record Error: {e.status} {e.resource_name} {e.content}"}
-    except Exception as e:
-        return {"success": False, "error": f"Error creating {object_name} record: {str(e)}"}
-
-@mcp.tool
-def update_record(object_name: str, record_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Update an existing record in Salesforce."""
-    try:
-        sf = get_salesforce_client()
-        sf_object = getattr(sf, object_name)
-        status_code = sf_object.update(record_id, data)
-        
-        success = 200 <= status_code < 300
-        return {
-            "success": success,
-            "status_code": status_code,
-            "message": f"Update {object_name} record {record_id}: {'Success' if success else 'Failed'}"
-        }
-    except AttributeError:
-        return {"success": False, "error": f"Object type '{object_name}' not found or accessible via API"}
-    except SalesforceError as e:
-        return {"success": False, "error": f"Update Record Error: {e.status} {e.resource_name} {e.content}"}
-    except Exception as e:
-        return {"success": False, "error": f"Error updating {object_name} record {record_id}: {str(e)}"}
-
-@mcp.tool
-def delete_record(object_name: str, record_id: str) -> Dict[str, Any]:
-    """Delete a record from Salesforce."""
-    try:
-        sf = get_salesforce_client()
-        sf_object = getattr(sf, object_name)
-        status_code = sf_object.delete(record_id)
-        
-        success = 200 <= status_code < 300
-        return {
-            "success": success,
-            "status_code": status_code,
-            "message": f"Delete {object_name} record {record_id}: {'Success' if success else 'Failed'}"
-        }
-    except AttributeError:
-        return {"success": False, "error": f"Object type '{object_name}' not found or accessible via API"}
-    except SalesforceError as e:
-        return {"success": False, "error": f"Delete Record Error: {e.status} {e.resource_name} {e.content}"}
-    except Exception as e:
-        return {"success": False, "error": f"Error deleting {object_name} record {record_id}: {str(e)}"}
 
 # --- Chạy Server ---
 
 if __name__ == "__main__":
-    print("Starting Salesforce MCP server on http://localhost:8000 ...")
+    print("Starting Salesforce Contract MCP server on http://localhost:8000 ...")
     mcp.run(transport="http", port=8000)
