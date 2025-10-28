@@ -1,6 +1,6 @@
 from fastmcp import FastMCP
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from simple_salesforce import Salesforce
 from dotenv import load_dotenv
 import pandas as pd
@@ -40,44 +40,14 @@ def get_salesforce_client() -> Salesforce:
     )
     return sf
 
-# --- Hàm Helper: Logic xử lý dữ liệu ---
+# --- Hàm Helper: CHỈ XỬ LÝ DỮ LIỆU ---
+# (Hàm này được tách ra từ _get_processed_data cũ)
 
-def _get_processed_data() -> pd.DataFrame:
+def _process_salesforce_records(records: List[Dict[str, Any]]) -> pd.DataFrame:
     """
-    Hàm helper nội bộ để lấy và xử lý dữ liệu từ Salesforce.
-    Kết hợp logic từ fetch_data() và transform_data().
+    Hàm helper nội bộ để CHUYỂN ĐỔI danh sách bản ghi thô từ Salesforce
+    thành một DataFrame đã được xử lý bằng Pandas.
     """
-    
-    # 1. Kết nối và Lấy dữ liệu
-    sf = get_salesforce_client()
-    soql = """
-        SELECT Name, 
-            Contract__r.Account__r.Account_Code__c, 
-            Product__r.STONE_Color_Type__c,
-            Product__r.StockKeepingUnit,
-            Product__r.Family,
-            Segment__c,
-            Contract__r.Created_Date__c,
-            Contract__r.Name,
-            Product_Discription__c,
-            Length__c,
-            Width__c,
-            Height__c,
-            Quantity__c,
-            Crates__c,
-            m2__c,
-            m3__c,
-            Tons__c, 
-            Cont__c,
-            Sales_Price__c,
-            Charge_Unit_PI__c,
-            Total_Price_USD__c
-        FROM Contract_Product__c 
-        ORDER BY Contract__r.Created_Date__c DESC
-    """
-    
-    query_result = sf.query_all(soql)
-    records = query_result.get('records', [])
     
     if not records:
         return pd.DataFrame()  # Trả về DataFrame rỗng nếu không có dữ liệu
@@ -96,7 +66,7 @@ def _get_processed_data() -> pd.DataFrame:
                   .str.replace('Product__r.', 'Product_', regex=False)
                   .str.replace('Account__r.', 'Account_', regex=False))
 
-    # 2. Chuyển đổi dữ liệu
+    # Chuyển đổi dữ liệu
     df_export = pd.DataFrame()
     
     df_export['Account Name: Account Code'] = df.get('Contract_Account_Account_Code__c')
@@ -141,7 +111,7 @@ def _get_processed_data() -> pd.DataFrame:
     df_export['Contract Name'] = df.get('Contract_Name')
     df_export['Created Date (C)'] = df['Created_Date'].dt.strftime('%d/%m/%Y')
     
-    # 3. Lọc và Sắp xếp
+    # Lọc và Sắp xếp
     current_year = datetime.now().year
     df_export = df_export[
         (df_export['YEAR'] >= 2015) & 
@@ -159,21 +129,53 @@ def _get_processed_data() -> pd.DataFrame:
     
     return df_export
 
-# --- CÁC TOOL MCP ---
+
+# --- CÁC TOOL MCP ĐÃ SỬA LẠI ---
 
 @mcp.tool()
 def get_all_contract_product_details() -> Dict[str, Any]:
     """
     Tool 1: Lấy toàn bộ dữ liệu chi tiết sản phẩm hợp đồng đã được xử lý.
-    Fetch, transform, and return all contract product details as JSON.
+    CẢNH BÁO: Tool này vẫn tải toàn bộ dữ liệu. Chỉ dùng khi thực sự cần.
+    Thêm LIMIT 10000 để bảo vệ server.
     
     Returns:
         Dict with 'success', 'count', and 'data' keys
     """
     try:
-        df = _get_processed_data()
+        sf = get_salesforce_client()
+        # Đây là truy vấn gốc của bạn, thêm LIMIT để an toàn
+        soql = """
+            SELECT Name, 
+                Contract__r.Account__r.Account_Code__c, 
+                Product__r.STONE_Color_Type__c,
+                Product__r.StockKeepingUnit,
+                Product__r.Family,
+                Segment__c,
+                Contract__r.Created_Date__c,
+                Contract__r.Name,
+                Product_Discription__c,
+                Length__c,
+                Width__c,
+                Height__c,
+                Quantity__c,
+                Crates__c,
+                m2__c,
+                m3__c,
+                Tons__c, 
+                Cont__c,
+                Sales_Price__c,
+                Charge_Unit_PI__c,
+                Total_Price_USD__c
+            FROM Contract_Product__c 
+            ORDER BY Contract__r.Created_Date__c DESC
+            LIMIT 10000
+        """
         
-        if df.empty:
+        query_result = sf.query_all(soql)
+        records = query_result.get('records', [])
+        
+        if not records:
             return {
                 "success": True, 
                 "count": 0, 
@@ -181,14 +183,17 @@ def get_all_contract_product_details() -> Dict[str, Any]:
                 "message": "No contract products found"
             }
         
+        # Gọi hàm helper để xử lý
+        df = _process_salesforce_records(records)
+        
         # Thay thế NaN bằng None để tương thích JSON
         df_json = df.replace({np.nan: None})
-        records = df_json.to_dict(orient='records')
+        records_json = df_json.to_dict(orient='records')
         
         return {
             "success": True, 
-            "count": len(records), 
-            "data": records
+            "count": len(records_json), 
+            "data": records_json
         }
         
     except Exception as e:
@@ -200,8 +205,8 @@ def get_all_contract_product_details() -> Dict[str, Any]:
 @mcp.tool()
 def get_contract_details_by_account(account_code: str) -> Dict[str, Any]:
     """
-    Tool 2: Lấy dữ liệu chi tiết sản phẩm hợp đồng đã xử lý, lọc theo Account Code.
-    Fetch processed contract product details, filtered by a specific Account Code.
+    Tool 2: Lấy dữ liệu chi tiết sản phẩm hợp đồng, *LỌC THEO ACCOUNT CODE TỪ SOQL*.
+    Đây là cách làm hiệu quả.
     
     Args:
         account_code: The account code to filter by (case-insensitive)
@@ -217,23 +222,43 @@ def get_contract_details_by_account(account_code: str) -> Dict[str, Any]:
                 "error": "Account code cannot be empty"
             }
         
-        df = _get_processed_data()
+        account_code_clean = account_code.strip()
         
-        if df.empty:
-            return {
-                "success": True, 
-                "count": 0, 
-                "data": [], 
-                "message": f"No data found (empty source) for account code {account_code}"
-            }
+        sf = get_salesforce_client()
         
-        # Lọc DataFrame (so sánh không phân biệt chữ hoa/thường và khoảng trắng)
-        account_code_clean = account_code.strip().lower()
-        filtered_df = df[
-            df['Account Name: Account Code'].astype(str).str.strip().str.lower() == account_code_clean
-        ]
+        # **THAY ĐỔI QUAN TRỌNG: Thêm WHERE clause vào SOQL**
+        soql = f"""
+            SELECT Name, 
+                Contract__r.Account__r.Account_Code__c, 
+                Product__r.STONE_Color_Type__c,
+                Product__r.StockKeepingUnit,
+                Product__r.Family,
+                Segment__c,
+                Contract__r.Created_Date__c,
+                Contract__r.Name,
+                Product_Discription__c,
+                Length__c,
+                Width__c,
+                Height__c,
+                Quantity__c,
+                Crates__c,
+                m2__c,
+                m3__c,
+                Tons__c, 
+                Cont__c,
+                Sales_Price__c,
+                Charge_Unit_PI__c,
+                Total_Price_USD__c
+            FROM Contract_Product__c 
+            WHERE Contract__r.Account__r.Account_Code__c = '{account_code_clean}'
+            ORDER BY Contract__r.Created_Date__c DESC
+        """
         
-        if filtered_df.empty:
+        # Chỉ truy vấn dữ liệu đã được lọc
+        query_result = sf.query_all(soql)
+        records = query_result.get('records', [])
+        
+        if not records:
             return {
                 "success": True, 
                 "count": 0, 
@@ -241,14 +266,17 @@ def get_contract_details_by_account(account_code: str) -> Dict[str, Any]:
                 "message": f"No data found for account code '{account_code}'"
             }
             
+        # Gọi hàm helper để xử lý *chỉ các bản ghi đã lọc*
+        df = _process_salesforce_records(records)
+            
         # Thay thế NaN bằng None để tương thích JSON
-        df_json = filtered_df.replace({np.nan: None})
-        records = df_json.to_dict(orient='records')
+        df_json = df.replace({np.nan: None})
+        records_json = df_json.to_dict(orient='records')
         
         return {
             "success": True, 
-            "count": len(records), 
-            "data": records,
+            "count": len(records_json), 
+            "data": records_json,
             "account_code": account_code
         }
         
